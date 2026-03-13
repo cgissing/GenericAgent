@@ -254,13 +254,6 @@ You're also welcome to join our **GenericAgent Community Group** for discussion,
 MIT License — see [LICENSE](LICENSE)
 
 
-
-<div align="center">
-<img src="assets/images/bar.png" width="880"/>
-</div>
-
-
-
 ---
 <a name="chinese"></a>
 ## 🌟 项目简介

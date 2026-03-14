@@ -189,6 +189,7 @@ if __name__ == '__main__':
             try:
                 while 'done' not in (item := dq.get(timeout=120)): pass
                 result = item['done']
+                print(result)
             except Exception as e:
                 if once: raise
                 print(f'[Reflect] drain error: {e}'); result = f'[ERROR] {e}'

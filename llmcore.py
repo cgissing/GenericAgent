@@ -84,6 +84,7 @@ class ClaudeSession:
         return result[::-1] or messages[-2:]
     def raw_ask(self, messages, model=None, temperature=0.5, max_tokens=6144):
         model = model or self.default_model
+        if 'kimi' in model.lower(): temperature = 1.0  # kimi only accepts temp 1.0
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json", "anthropic-version": "2023-06-01"}
         payload = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": True}
         try:
@@ -168,6 +169,7 @@ class LLMSession:
 
     def raw_ask(self, messages, model=None, temperature=0.5):
         if model is None: model = self.default_model
+        if 'kimi' in model.lower(): temperature = 1.0  # kimi only accepts temp 1.0
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
         if self.api_mode == "responses":
             url = auto_make_url(self.api_base, "responses")

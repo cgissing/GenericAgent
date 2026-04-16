@@ -2,7 +2,7 @@
 
 **触发**：3步以上有依赖/多文件协同/条件分支/需并行 | **禁用**：1-2步简单任务直接做
 任务开始前必须先创建工作目录 `./plan_XXX/`（XXX=任务英文短名）
-使用code_run({'_inline_eval':True, 'script':'handler.enter_plan_mode("./plan_XXX/plan.md")'})进入plan模式（使用未在schema中描述的秘密参数_inline_eval）
+单独使用一个code_run({'inline_eval':True, 'script':'handler.enter_plan_mode("./plan_XXX/plan.md")'})进入plan模式
 
 ---
 

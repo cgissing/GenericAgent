@@ -295,8 +295,6 @@ class GenericAgentHandler(BaseHandler):
 
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。'''
-        if response.tool_calls and sum(1 for tc in response.tool_calls[:args.get('_index', 0)] if tc.function.name == 'code_run') > 0:
-            return StepOutcome("[ERROR] no multi code_run in one round!", next_prompt="\n") 
         code_type = args.get("type", "python")
         code = args.get("code") or args.get("script")
         if not code:
@@ -306,11 +304,15 @@ class GenericAgentHandler(BaseHandler):
         raw_path = os.path.join(self.cwd, args.get("cwd", './'))
         cwd = os.path.normpath(os.path.abspath(raw_path))
         code_cwd = os.path.normpath(self.cwd)
-        if args.get("_inline_eval"):
+        if code_type == 'python' and args.get("inline_eval"):
             ns = {'handler': self, 'parent': self.parent}
-            try: result = repr(eval(code, ns))
-            except SyntaxError: exec(code, ns); result = ns.get('_r', 'OK')
-            except Exception as e: result = f'Error: {e}'
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cwd)
+                try: result = repr(eval(code, ns))
+                except SyntaxError: exec(code, ns); result = ns.get('_r', 'OK')
+                except Exception as e: result = f'Error: {e}'
+            finally: os.chdir(old_cwd)
         else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal)
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)

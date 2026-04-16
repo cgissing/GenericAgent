@@ -7,7 +7,8 @@ try: sys.stdout.reconfigure(errors='replace')
 except: pass
 try: sys.stderr.reconfigure(errors='replace')
 except: pass
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+script_dir = os.path.dirname(__file__)
+sys.path.append(os.path.abspath(os.path.join(script_dir, '..')))
 
 import streamlit as st
 import time, json, re, threading, queue
@@ -41,12 +42,18 @@ def render_sidebar():
         agent.next_llm(); st.rerun(scope="fragment")
     if st.button("强行停止任务"):
         agent.abort(); st.toast("已发送停止信号"); st.rerun()
-    if st.button("重新注入System Prompt"):
-        agent.llmclient.last_tools = ''; st.toast("下次将重新注入System Prompt")
+    if st.button("重新注入工具"):
+        agent.llmclient.last_tools = ''
+        try:
+            hist_path = os.path.join(script_dir, '..', 'assets', 'tool_usable_history.json')
+            with open(hist_path, 'r', encoding='utf-8') as f: tool_hist = json.load(f)
+            agent.llmclient.backend.history.extend(tool_hist)
+            st.toast(f"已重新注入工具，追加了 {len(tool_hist)} 条示范记录")
+        except Exception as e: st.toast(f"注入工具示范失败: {e}")
     if st.button("🐱 桌面宠物"):
         kwargs = {'creationflags': 0x08} if sys.platform == 'win32' else {}
-        pet_script = os.path.join(os.path.dirname(__file__), 'desktop_pet_v2.pyw')
-        if not os.path.exists(pet_script): pet_script = os.path.join(os.path.dirname(__file__), 'desktop_pet.pyw')
+        pet_script = os.path.join(script_dir, 'desktop_pet_v2.pyw')
+        if not os.path.exists(pet_script): pet_script = os.path.join(script_dir, 'desktop_pet.pyw')
         subprocess.Popen([sys.executable, pet_script], **kwargs)
         def _pet_req(q):
             def _do():

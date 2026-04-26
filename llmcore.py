@@ -2,6 +2,10 @@ import os, json, re, time, requests, sys, threading, urllib3, base64, mimetypes,
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 _RESP_CACHE_KEY = str(uuid.uuid4())
+from gpt_auth import GPTAuthError, resolve_gpt_auth
+from gpt_models import get_gpt_model_profile, normalize_reasoning_effort
+from gpt_responses import build_responses_payload, make_conversation_id, parse_responses_json, parse_responses_sse
+from gpt_responses_ws import responses_ws_url, stream_responses_ws
 
 def _load_mykeys():
     try:
@@ -38,8 +42,9 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False):
         return text
     for i, msg in enumerate(messages):
         if i >= len(messages) - keep_recent: break
-        c = msg['content']
-        if isinstance(c, str): msg['content'] = _trunc(c)
+        key = 'content' if 'content' in msg else 'prompt'
+        c = msg.get(key, '')
+        if isinstance(c, str): msg[key] = _trunc(c)
         elif isinstance(c, list):
             for b in c:
                 if not isinstance(b, dict): continue
@@ -99,6 +104,12 @@ def auto_make_url(base, path):
     if b.endswith('$'): return b[:-1].rstrip('/')
     if b.endswith(p): return b
     return f"{b}/{p}" if re.search(r'/v\d+(/|$)', b) else f"{b}/v1/{p}"
+
+def auto_make_responses_url(base):
+    b = base.rstrip('/')
+    if 'chatgpt.com/backend-api/codex' in b:
+        return b if b.endswith('/responses') else f"{b}/responses"
+    return auto_make_url(base, "responses")
 
 def _parse_claude_sse(resp_lines):
     """Parse Anthropic SSE stream. Yields text chunks, returns list[content_block]."""
@@ -335,8 +346,11 @@ def _openai_stream(api_base, api_key, messages, model, api_mode='chat_completion
                    max_retries=0, connect_timeout=10, read_timeout=300, proxies=None, stream=True):
     """Shared OpenAI-compatible streaming request with retry. Yields text chunks, returns list[content_block]."""
     ml = model.lower()
-    if 'kimi' in ml or 'moonshot' in ml: temperature = 1
-    elif 'minimax' in ml: temperature = max(0.01, min(temperature, 1.0))  # MiniMax requires temp in (0, 1]
+    force_temperature = False
+    if 'kimi' in ml or 'moonshot' in ml:
+        temperature = 1; force_temperature = True
+    elif 'minimax' in ml:
+        temperature = max(0.01, min(temperature, 1.0)); force_temperature = True  # MiniMax requires temp in (0, 1]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
     if api_mode == "responses":
         url = auto_make_url(api_base, "responses")
@@ -350,7 +364,7 @@ def _openai_stream(api_base, api_key, messages, model, api_mode='chat_completion
         _stamp_oai_cache_markers(messages, model)
         payload = {"model": model, "messages": messages, "stream": stream}
         if stream: payload["stream_options"] = {"include_usage": True}
-        if temperature != 1: payload["temperature"] = temperature
+        if force_temperature or temperature != 1: payload["temperature"] = temperature
         if max_tokens: payload["max_completion_tokens" if ml.startswith(("gpt-5", "o1", "o2", "o3", "o4")) else "max_tokens"] = max_tokens
         if reasoning_effort: payload["reasoning_effort"] = reasoning_effort
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
@@ -485,8 +499,9 @@ def _msgs_claude2oai(messages):
 
 class BaseSession:
     def __init__(self, cfg):
-        self.api_key = cfg['apikey']
-        self.api_base = cfg['apibase'].rstrip('/')
+        self.cfg = cfg
+        self.api_key = cfg.get('apikey') or cfg.get('api_key') or cfg.get('OPENAI_API_KEY') or ''
+        self.api_base = (cfg.get('apibase') or cfg.get('base_url') or '').rstrip('/')
         self.model = cfg.get('model', '')
         self.context_win = cfg.get('context_win', 24000)
         self.history = []
@@ -571,9 +586,12 @@ class ClaudeSession(BaseSession):
         return msgs
 
 class LLMSession(BaseSession):
-    def raw_ask(self, messages):
-        return (yield from _openai_stream(self.api_base, self.api_key, messages, self.model, self.api_mode,
-                                  temperature=self.temperature, reasoning_effort=self.reasoning_effort,
+    def raw_ask(self, messages, **overrides):
+        model = overrides.get('model', self.model)
+        temperature = overrides.get('temperature', self.temperature)
+        reasoning_effort = overrides.get('reasoning_effort', self.reasoning_effort)
+        return (yield from _openai_stream(self.api_base, self.api_key, messages, model, self.api_mode,
+                                  temperature=temperature, reasoning_effort=reasoning_effort,
                                   max_tokens=self.max_tokens, max_retries=self.max_retries, stream=self.stream,
                                   connect_timeout=self.connect_timeout, read_timeout=self.read_timeout, proxies=self.proxies))
     def make_messages(self, raw_list): return _msgs_claude2oai(raw_list)
@@ -684,6 +702,101 @@ class NativeOAISession(NativeClaudeSession):
                                           tools=self.tools, reasoning_effort=self.reasoning_effort,
                                           max_retries=self.max_retries, connect_timeout=self.connect_timeout,
                                           read_timeout=self.read_timeout, proxies=self.proxies, stream=self.stream))
+
+class NativeGPTSession(BaseSession):
+    """Codex-native GPT session using Responses API semantics."""
+    is_gpt_native = True
+    no_summary_protocol = True
+
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.profile = get_gpt_model_profile(self.model or cfg.get("model", "gpt-5.5"))
+        self.model = self.model or self.profile.name
+        self.context_win = cfg.get("context_win", self.profile.context_win)
+        self.reasoning_effort = normalize_reasoning_effort(self.reasoning_effort or cfg.get("reasoning_effort"), self.profile)
+        self.verbosity = cfg.get("verbosity", self.profile.default_verbosity)
+        self.parallel_tool_calls = bool(cfg.get("parallel_tool_calls", self.profile.supports_parallel_tool_calls))
+        self.transport = str(cfg.get("transport", "auto")).strip().lower()
+        self.store = bool(cfg.get("store", False))
+        self.prompt_cache_key = str(cfg.get("prompt_cache_key") or make_conversation_id(cfg))
+        self.tools = None
+        self._auth = resolve_gpt_auth(cfg)
+        self.api_base = self._auth.base_url
+        self.name = cfg.get("name", self.model)
+
+    @property
+    def auth_info(self):
+        return self._auth.redacted
+
+    def raw_ask(self, messages):
+        payload = build_responses_payload(
+            model=self.model,
+            messages=messages,
+            instructions=self.system or "You are GenericAgent running in GPT/Codex-native mode.",
+            tools=self.tools,
+            reasoning_effort=self.reasoning_effort,
+            verbosity=self.verbosity,
+            stream=self.stream,
+            prompt_cache_key=self.prompt_cache_key,
+            parallel_tool_calls=self.parallel_tool_calls,
+            store=self.store,
+            max_output_tokens=self.max_tokens,
+        )
+        if self.transport in ("auto", "websocket", "ws") and self.profile.prefer_websocket and self.stream:
+            try:
+                return (yield from stream_responses_ws(
+                    responses_ws_url(self.api_base),
+                    self._auth.headers,
+                    payload,
+                    connect_timeout=self.connect_timeout,
+                )) or []
+            except Exception as e:
+                if self.transport in ("websocket", "ws"):
+                    yield (err := f"!!!Error: WebSocket {type(e).__name__}: {e}")
+                    return [{"type": "text", "text": err}]
+                print(f"[GPT] WebSocket unavailable, falling back to HTTP: {type(e).__name__}: {e}")
+        try:
+            with requests.post(auto_make_responses_url(self.api_base), headers=self._auth.headers, json=payload,
+                               stream=self.stream, timeout=(self.connect_timeout, self.read_timeout), proxies=self.proxies) as resp:
+                if resp.status_code >= 400:
+                    body = ""
+                    try: body = resp.text.strip()[:500]
+                    except Exception: pass
+                    yield (err := f"!!!Error: HTTP {resp.status_code}" + (f": {body}" if body else ""))
+                    return [{"type": "text", "text": err}]
+                gen = parse_responses_sse(resp.iter_lines()) if self.stream else parse_responses_json(resp.json())
+                try:
+                    while True: yield next(gen)
+                except StopIteration as e:
+                    blocks = []
+                    for b in (e.value or []):
+                        if b.get("type") == "usage": _record_usage(b.get("usage") or {}, "responses")
+                        else: blocks.append(b)
+                    return blocks
+        except GPTAuthError as e:
+            yield (err := f"!!!Error: {e}")
+            return [{"type": "text", "text": err}]
+        except Exception as e:
+            yield (err := f"!!!Error: {type(e).__name__}: {e}")
+            return [{"type": "text", "text": err}]
+
+    def ask(self, msg):
+        assert type(msg) is dict
+        with self.lock:
+            self.history.append(msg)
+            trim_messages_history(self.history, self.context_win)
+            messages = _msgs_claude2oai(_fix_messages([{"role": m["role"], "content": list(m["content"])} for m in self.history]))
+        content_blocks = None
+        gen = self.raw_ask(messages)
+        try:
+            while True: yield next(gen)
+        except StopIteration as e: content_blocks = e.value or []
+        if content_blocks and not (len(content_blocks) == 1 and content_blocks[0].get("text", "").startswith("!!!Error:")):
+            self.history.append({"role": "assistant", "content": content_blocks})
+        content = "\n".join(b.get("text", "") for b in content_blocks if b.get("type") == "text").strip()
+        thinking = "\n".join(b.get("thinking", "") for b in content_blocks if b.get("type") == "thinking").strip()
+        tool_calls = [MockToolCall(b["name"], b.get("input", {}), id=b.get("id", "")) for b in content_blocks if b.get("type") == "tool_use"]
+        return MockResponse(thinking, content, tool_calls, json.dumps(content_blocks, ensure_ascii=False))
 
 def openai_tools_to_claude(tools):
     """[{type:'function', function:{name,description,parameters}}] → [{name,description,input_schema}]."""
@@ -958,11 +1071,15 @@ class NativeToolClient:
     def _thinking_prompt(): return THINKING_PROMPT_EN if os.environ.get('GA_LANG') == 'en' else THINKING_PROMPT_ZH
     def __init__(self, backend):
         self.backend = backend
-        self.backend.system = self._thinking_prompt()
+        if not getattr(self.backend, "no_summary_protocol", False):
+            self.backend.system = self._thinking_prompt()
         self.name = self.backend.name
         self._pending_tool_ids = []
     def set_system(self, extra_system):
-        combined = f"{extra_system}\n\n{self._thinking_prompt()}" if extra_system else self._thinking_prompt()
+        if getattr(self.backend, "no_summary_protocol", False):
+            combined = extra_system or ""
+        else:
+            combined = f"{extra_system}\n\n{self._thinking_prompt()}" if extra_system else self._thinking_prompt()
         if combined != self.backend.system: print(f"[Debug] Updated system prompt, length {len(combined)} chars.")
         self.backend.system = combined
     def chat(self, messages, tools=None):
@@ -991,6 +1108,12 @@ class NativeToolClient:
             while True: 
                 chunk = next(gen); yield chunk
         except StopIteration as e: resp = e.value
+        if resp and not getattr(resp, "thinking", "") and getattr(resp, "content", ""):
+            pat = r"<think(?:ing)?>(.*?)</think(?:ing)?>"
+            m = re.search(pat, resp.content, flags=re.DOTALL | re.IGNORECASE)
+            if m:
+                resp.thinking = m.group(1).strip()
+                resp.content = re.sub(pat, "", resp.content, flags=re.DOTALL | re.IGNORECASE).strip()
         if resp: _write_llm_log('Response', resp.raw)
         if resp and hasattr(resp, 'tool_calls') and resp.tool_calls: self._pending_tool_ids = [tc.id for tc in resp.tool_calls]
         return resp

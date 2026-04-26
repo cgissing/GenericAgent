@@ -136,6 +136,27 @@ def extract_history(src, session_name=None):
         return _merge_history_blocks(all_blocks)
     return []
 
+def load_memory_events(l4_dir=None):
+    """Load GPT-native structured memory events from memory_events_*.jsonl."""
+    l4_dir = os.path.normpath(l4_dir or L4_DIR)
+    events = []
+    for fp in sorted(glob.glob(os.path.join(l4_dir, 'memory_events_*.jsonl'))):
+        try:
+            with open(fp, 'r', encoding='utf-8', errors='replace') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        evt = json.loads(line)
+                        evt['_source'] = os.path.basename(fp)
+                        events.append(evt)
+                    except Exception:
+                        pass
+        except FileNotFoundError:
+            continue
+    return events
+
 def format_history_block(session_name, history_lines):
     """Format history lines into all_histories.txt block format."""
     sep = '=' * 60

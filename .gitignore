@@ -34,6 +34,7 @@ tasks/
 *.zip
 
 memory/*
+!memory/model_policy.json
 !memory/memory_management_sop.md
 
 # Allow tracking of specific SOPs

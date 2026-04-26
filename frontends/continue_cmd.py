@@ -60,6 +60,9 @@ def _last_summary(pairs):
             summary = match.group(1).strip()
             if summary:
                 return summary
+        fallback = re.sub(r'<think(?:ing)?>[\s\S]*?</think(?:ing)?>', '', '\n'.join(text_parts), flags=re.DOTALL).strip()
+        if fallback:
+            return re.sub(r'\s+', ' ', fallback)[:500]
     return ''
 
 

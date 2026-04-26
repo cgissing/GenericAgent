@@ -1,0 +1,28 @@
+{
+  "ttl_hours": 24,
+  "default_main_model": "gpt-5.5",
+  "tasks": {
+    "turn_summary": {
+      "mode": "deterministic",
+      "fallback_model": "gpt-5.4-mini"
+    },
+    "checkpoint_compaction": {
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "low"
+    },
+    "session_archive": {
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "low"
+    },
+    "long_term_extract": {
+      "model": "gpt-5.4-mini",
+      "reasoning_effort": "medium",
+      "fallback_model": "gpt-5.5"
+    },
+    "sop_consolidation": {
+      "model": "gpt-5.5",
+      "reasoning_effort": "medium",
+      "only_when": "conflict_or_high_value"
+    }
+  }
+}

@@ -143,8 +143,13 @@ def _native_response_summary(response_body):
             text = block.get("text", "")
             if isinstance(text, str) and text:
                 text_parts.append(text)
-    match = SUMMARY_RE.search("\n".join(text_parts))
-    return (match.group(1).strip() if match else "")[:500]
+    joined = "\n".join(text_parts)
+    match = SUMMARY_RE.search(joined)
+    if match:
+        return match.group(1).strip()[:500]
+    clean = re.sub(r"<think(?:ing)?>[\s\S]*?</think(?:ing)?>", "", joined, flags=re.DOTALL).strip()
+    clean = re.sub(r"\s+", " ", clean)
+    return clean[:500]
 
 
 def _restore_native_history(content):

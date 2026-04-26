@@ -423,3 +423,24 @@ native_oai_config = {
 #     'secret_key': 'sk-lf-...',
 #     'host': 'https://cloud.langfuse.com',   # 或自托管地址
 # }
+
+
+# GPT / Codex-native Responses path. Copy this block to mykey.py when you want
+# GPT-5.5 to use the Codex-native provider rather than the legacy OAI/Claude
+# harness. `auth='codex'` reuses $CODEX_HOME/auth.json or ~/.codex/auth.json.
+# Run `codex login` for ChatGPT OAuth, or set OPENAI_API_KEY / apikey for
+# API-key mode. GenericAgent never implements its own OAuth flow.
+# native_gpt_config = {
+#     'provider': 'codex_gpt',
+#     'name': 'gpt-native',
+#     'model': 'gpt-5.5',
+#     'auth': 'codex',
+#     'transport': 'auto',
+#     'reasoning_effort': 'medium',
+#     'verbosity': 'low',
+#     'parallel_tool_calls': True,
+#     'context_win': 272000,
+#     'memory_policy': 'auto',
+#     # 'apikey': 'sk-<your-openai-api-key>',
+#     # 'apibase': 'https://api.openai.com/v1',
+# }

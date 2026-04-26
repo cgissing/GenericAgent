@@ -7,7 +7,7 @@ if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agent_loop import BaseHandler, StepOutcome, json_default
-from gpt_compaction import build_structured_compaction, should_compact
+from gpt_compaction import build_structured_compaction, compaction_payload_from_handoff, should_compact
 from memory_adapter import MemoryEvent, append_l4_memory_event, build_turn_memory_entry, entry_to_history_line
 
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=[]):
@@ -374,6 +374,7 @@ class GenericAgentHandler(BaseHandler):
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
         self.history_info = last_history if last_history else []
+        self._recent_turn_entries = []
         self.code_stop_signal = []
         self._done_hooks = []
 
@@ -665,6 +666,8 @@ class GenericAgentHandler(BaseHandler):
         if self._is_gpt_native():
             entry = build_turn_memory_entry(response, tool_calls, tool_results, turn, next_prompt)
             self.history_info.append(entry_to_history_line(entry))
+            self._recent_turn_entries.append(entry)
+            self._recent_turn_entries = self._recent_turn_entries[-80:]
             try:
                 backend = getattr(getattr(self.parent, 'llmclient', None), 'backend', None)
                 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -684,7 +687,22 @@ class GenericAgentHandler(BaseHandler):
             est_chars = sum(len(str(x)) for x in self.history_info[-200:])
             backend = getattr(getattr(self.parent, 'llmclient', None), 'backend', None)
             if should_compact(est_chars, getattr(backend, 'context_win', 24000)):
-                next_prompt += "\n\n" + build_structured_compaction(self.history_info, self.working)
+                compaction = build_structured_compaction(self.history_info, self.working, self._recent_turn_entries)
+                next_prompt += "\n\n" + compaction
+                try:
+                    append_l4_memory_event(
+                        os.path.join(script_dir, 'memory'),
+                        MemoryEvent(
+                            event_type="compaction",
+                            evidence_refs=entry.artifacts,
+                            created_by_model=False,
+                            model=getattr(backend, 'model', None),
+                            cost_class="deterministic",
+                            payload=compaction_payload_from_handoff(compaction),
+                        ),
+                    )
+                except Exception as e:
+                    print(f"[WARN] GPT compaction event write failed: {e}")
         else:
             _c = re.sub(r'```.*?```|<thinking>.*?</thinking>', '', response.content, flags=re.DOTALL)
             rsumm = re.search(r"<summary>(.*?)</summary>", _c, re.DOTALL)

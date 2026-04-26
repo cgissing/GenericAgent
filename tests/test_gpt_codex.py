@@ -224,6 +224,34 @@ class TestGPTMemoryAndTools(unittest.TestCase):
         self.assertIn("status=success", entry.tool_results_summary[0])
         self.assertTrue(entry_to_history_line(entry).startswith("[Agent]"))
 
+    def test_structured_compaction_uses_turn_evidence_and_checkpoint(self):
+        from gpt_compaction import build_structured_compaction
+        from memory_adapter import TurnMemoryEntry
+
+        entry = TurnMemoryEntry(
+            turn_id=7,
+            assistant_action="Patched Codex gateway routing.",
+            tool_calls=[{"tool_name": "shell_command", "args": {"command": "pytest"}, "id": "call_1"}],
+            tool_results_summary=["status=success, exit=0: 15 tests passed"],
+            artifacts=["C:\\repo\\gpt_auth.py", "https://gateway.example/backend-api/codex"],
+            errors=["HTTP 502 from custom gateway during retry"],
+            next_step="Run full unittest discover.",
+        )
+        handoff = build_structured_compaction(
+            ["[Agent] older context"],
+            {"key_info": "Preserve custom Codex gateway base URL.", "related_sop": "memory_management_sop.md"},
+            [entry],
+        )
+        payload = json.loads(handoff.split("\n", 1)[1])
+        self.assertEqual(payload["current_goal"], "Preserve custom Codex gateway base URL.")
+        self.assertEqual(payload["related_sop"], "memory_management_sop.md")
+        self.assertIn("C:\\repo\\gpt_auth.py", payload["key_artifacts"])
+        self.assertIn("HTTP 502", payload["open_blockers"][0])
+        self.assertEqual(payload["next_step"], "Run full unittest discover.")
+        self.assertEqual(payload["recent_turns"][0]["turn_id"], 7)
+        self.assertEqual(payload["recent_turns"][0]["tools"], ["shell_command"])
+        self.assertIn("15 tests passed", payload["recent_turns"][0]["tool_results"][0])
+
     def test_apply_patch_rejects_path_escape_and_updates_file(self):
         from ga import apply_codex_patch_text
 
@@ -268,6 +296,60 @@ class TestGPTMemoryAndTools(unittest.TestCase):
         self.assertNotIn("<summary>", next_prompt)
         self.assertNotIn("[DANGER] 你遗漏了", next_prompt)
         self.assertTrue(handler.history_info[-1].startswith("[Agent]"))
+
+
+    def test_gpt_compaction_writes_l4_compaction_event_when_threshold_hit(self):
+        from ga import GenericAgentHandler
+        from llmcore import MockResponse
+
+        class Backend:
+            is_gpt_native = True
+            model = "gpt-5.5"
+            context_win = 1
+
+        class Client:
+            backend = Backend()
+
+        class Parent:
+            llmclient = Client()
+            task_dir = None
+            verbose = False
+
+        handler = GenericAgentHandler(Parent(), ["[USER]: do work"], tempfile.gettempdir())
+        handler.working = {"key_info": "Finish compact v2", "related_sop": "memory_management_sop.md"}
+        events = []
+
+        def capture_event(_memory_dir, event):
+            events.append(event)
+            return "memory_events.jsonl"
+
+        resp = MockResponse("", "Patched compact handoff.", [], "")
+        tool_results = [
+            {
+                "tool_use_id": "call_1",
+                "content": json.dumps(
+                    {
+                        "status": "error",
+                        "stderr": "HTTP 502 from https://gateway.example/backend-api/codex",
+                        "exit_code": 1,
+                    }
+                ),
+            }
+        ]
+        with patch("ga.append_l4_memory_event", side_effect=capture_event):
+            next_prompt = handler.turn_end_callback(
+                resp,
+                [{"tool_name": "shell_command", "args": {"command": "pytest"}, "id": "call_1"}],
+                tool_results,
+                2,
+                "Retry with fallback",
+                {},
+            )
+        self.assertIn("### Context Compaction Handoff", next_prompt)
+        self.assertEqual([event.event_type for event in events], ["turn_summary", "compaction"])
+        self.assertFalse(events[1].created_by_model)
+        self.assertEqual(events[1].cost_class, "deterministic")
+        self.assertIn("HTTP 502", json.dumps(events[1].payload, ensure_ascii=False))
 
 
 class TestNativeToolClientGPTProtocol(unittest.TestCase):

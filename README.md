@@ -224,6 +224,29 @@ MIT License — see [LICENSE](LICENSE)
 
 *Disclaimer: This project does not build or operate any commercial website. Apart from DintalClaw, no institution, organization, or individual is currently officially authorized to conduct commercial activities under the GenericAgent name.*
 
+## GPT / Codex-Native Provider
+
+This branch adds a GPT-native path for OpenAI Responses/Codex-style usage. Configure it with `provider='codex_gpt'` or a variable name containing `native` and `gpt`:
+
+```python
+native_gpt_config = {
+    "provider": "codex_gpt",
+    "name": "gpt-native",
+    "model": "gpt-5.5",
+    "auth": "codex",
+    "transport": "auto",
+    "reasoning_effort": "medium",
+    "verbosity": "low",
+    "parallel_tool_calls": True,
+    "context_win": 272000,
+    "memory_policy": "auto",
+}
+```
+
+`auth="codex"` reuses `$CODEX_HOME/auth.json` or `~/.codex/auth.json`. If ChatGPT OAuth tokens are present, GA calls `https://chatgpt.com/backend-api/codex/responses`; otherwise it falls back to `OPENAI_API_KEY` / `apikey` and `https://api.openai.com/v1/responses`. GA does not implement its own OAuth flow; run `codex login` when OAuth state is missing.
+
+GPT-native mode uses `assets/sys_prompt_gpt.txt` and `assets/tools_schema_gpt.json`. It removes the legacy forced `<summary>` protocol, adds Codex-style `shell_command` and `apply_patch`, and writes deterministic `TurnMemoryEntry` / `MemoryEvent` records into the existing L1/L2/L3/L4 memory system. Ordinary turn summaries do not call the main model; `memory/model_policy.json` routes higher-value memory maintenance to cheaper models first and only falls back to `gpt-5.5` for high-value consolidation.
+
 
 ---
 <a name="chinese"></a>

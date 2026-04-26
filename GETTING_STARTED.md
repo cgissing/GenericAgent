@@ -267,3 +267,37 @@ GenericAgent 不预设技能，而是**靠使用进化**。每完成一个新任
 > Agent 会自动 pull 最新代码并解读 commit log，告诉你新增了什么能力。
 
 > 更多细节请参阅 [README.md](README.md) 或 [详细版图文教程](https://my.feishu.cn/wiki/CGrDw0T76iNFuskmwxdcWrpinPb)。
+
+---
+
+## GPT / Codex-native configuration
+
+For GPT-5.5, prefer the Codex-native provider instead of the legacy Claude-style `<summary>` harness:
+
+```python
+native_gpt_config = {
+    "provider": "codex_gpt",
+    "name": "gpt-native",
+    "model": "gpt-5.5",
+    "auth": "codex",
+    "transport": "auto",
+    "reasoning_effort": "medium",
+    "verbosity": "low",
+    "parallel_tool_calls": True,
+    "context_win": 272000,
+    "memory_policy": "auto",
+}
+```
+
+Authentication:
+
+- `auth="codex"` reads `$CODEX_HOME/auth.json`, then `~/.codex/auth.json`.
+- If ChatGPT OAuth tokens exist, GA uses the Codex backend at `https://chatgpt.com/backend-api/codex/responses`.
+- If only an API key is available, GA uses `https://api.openai.com/v1/responses`.
+- GA does not run a separate OAuth flow. If OAuth is missing, run `codex login`.
+
+Memory:
+
+- GPT mode does not ask the main model to output `<summary>` on every turn.
+- Runtime turn memory is generated deterministically from Responses items, tool calls, tool results, artifacts, and errors.
+- `memory/model_policy.json` chooses cheaper models for compaction, archive, and long-term extraction where possible; `gpt-5.5` is reserved for high-value or conflict-heavy consolidation.

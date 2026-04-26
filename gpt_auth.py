@@ -94,6 +94,30 @@ def _codex_tokens(auth: dict[str, Any]) -> dict[str, Any]:
     return tokens if isinstance(tokens, dict) else {}
 
 
+def _configured_base_url(cfg: dict[str, Any], keys: tuple[str, ...], default: str) -> str:
+    for key in keys:
+        value = cfg.get(key)
+        if value:
+            return str(value).rstrip("/")
+    return default.rstrip("/")
+
+
+def _chatgpt_codex_base_url(cfg: dict[str, Any]) -> str:
+    return _configured_base_url(
+        cfg,
+        ("codex_base_url", "chatgpt_base_url", "apibase", "base_url", "baseurl"),
+        CHATGPT_CODEX_BASE,
+    )
+
+
+def _openai_api_base_url(cfg: dict[str, Any]) -> str:
+    return _configured_base_url(
+        cfg,
+        ("codex_base_url", "openai_base_url", "apibase", "base_url", "baseurl"),
+        OPENAI_API_BASE,
+    )
+
+
 def resolve_gpt_auth(cfg: dict[str, Any] | None = None) -> GPTAuth:
     """Resolve GPT auth using Codex-compatible precedence.
 
@@ -124,7 +148,7 @@ def resolve_gpt_auth(cfg: dict[str, Any] | None = None) -> GPTAuth:
                 headers["X-OpenAI-Fedramp"] = "true"
             return GPTAuth(
                 mode="chatgpt_oauth",
-                base_url=str(cfg.get("apibase") or cfg.get("base_url") or CHATGPT_CODEX_BASE).rstrip("/"),
+                base_url=_chatgpt_codex_base_url(cfg),
                 headers=headers,
                 source=str(codex_auth_path(cfg)),
                 account_id=str(account_id) if account_id else None,
@@ -155,8 +179,7 @@ def _api_key_auth(api_key: str, source: str, cfg: dict[str, Any]) -> GPTAuth:
     }
     return GPTAuth(
         mode="api_key",
-        base_url=str(cfg.get("apibase") or cfg.get("base_url") or OPENAI_API_BASE).rstrip("/"),
+        base_url=_openai_api_base_url(cfg),
         headers=headers,
         source=source,
     )
-

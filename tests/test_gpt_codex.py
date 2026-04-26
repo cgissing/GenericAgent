@@ -59,6 +59,68 @@ class TestCodexGPTAuth(unittest.TestCase):
         self.assertEqual(auth.headers["X-OpenAI-Fedramp"], "true")
         self.assertNotIn("access-secret", auth.redacted)
 
+    def test_codex_oauth_custom_gateway_base_url_is_preserved(self):
+        from gpt_auth import resolve_gpt_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "auth.json").write_text(
+                json.dumps({"tokens": {"access_token": "access-secret"}}),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CODEX_HOME": td}, clear=False):
+                auth = resolve_gpt_auth(
+                    {
+                        "auth": "codex",
+                        "apibase": "https://gateway.example/backend-api/codex/",
+                    }
+                )
+        self.assertEqual(auth.mode, "chatgpt_oauth")
+        self.assertEqual(auth.base_url, "https://gateway.example/backend-api/codex")
+        self.assertEqual(auth.headers["Authorization"], "Bearer access-secret")
+
+    def test_codex_oauth_accepts_semantic_gateway_base_url_aliases(self):
+        from gpt_auth import resolve_gpt_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "auth.json").write_text(
+                json.dumps({"tokens": {"access_token": "access-secret"}}),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CODEX_HOME": td}, clear=False):
+                auth = resolve_gpt_auth(
+                    {
+                        "auth": "codex",
+                        "codex_base_url": "https://gateway.example/backend-api/codex",
+                    }
+                )
+        self.assertEqual(auth.base_url, "https://gateway.example/backend-api/codex")
+
+    def test_api_key_custom_gateway_base_url_is_preserved(self):
+        from gpt_auth import resolve_gpt_auth
+
+        auth = resolve_gpt_auth(
+            {
+                "auth": "api_key",
+                "apikey": "sk-test",
+                "apibase": "https://gateway.example/openai/v1/",
+            }
+        )
+        self.assertEqual(auth.mode, "api_key")
+        self.assertEqual(auth.base_url, "https://gateway.example/openai/v1")
+        self.assertEqual(auth.headers["Authorization"], "Bearer sk-test")
+
+    def test_api_key_accepts_baseurl_alias(self):
+        from gpt_auth import resolve_gpt_auth
+
+        auth = resolve_gpt_auth(
+            {
+                "auth": "api_key",
+                "apikey": "sk-test",
+                "baseurl": "https://gateway.example/openai/v1",
+            }
+        )
+        self.assertEqual(auth.base_url, "https://gateway.example/openai/v1")
+
 
 class TestResponsesPayloadAndParsing(unittest.TestCase):
     def test_payload_has_codex_responses_fields(self):
@@ -117,6 +179,22 @@ class TestResponsesPayloadAndParsing(unittest.TestCase):
         blocks = cm.exception.value
         self.assertEqual(blocks[0]["name"], "apply_patch")
         self.assertEqual(blocks[0]["input"]["patch"], "*** Begin Patch\n*** End Patch")
+
+    def test_auto_make_responses_url_supports_custom_codex_gateway(self):
+        from llmcore import auto_make_responses_url
+
+        self.assertEqual(
+            auto_make_responses_url("https://gateway.example/backend-api/codex"),
+            "https://gateway.example/backend-api/codex/responses",
+        )
+        self.assertEqual(
+            auto_make_responses_url("https://gateway.example/backend-api/codex/responses"),
+            "https://gateway.example/backend-api/codex/responses",
+        )
+        self.assertEqual(
+            auto_make_responses_url("https://gateway.example/openai/v1"),
+            "https://gateway.example/openai/v1/responses",
+        )
 
 
 class TestGPTMemoryAndTools(unittest.TestCase):

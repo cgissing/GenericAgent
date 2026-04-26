@@ -107,8 +107,11 @@ def auto_make_url(base, path):
 
 def auto_make_responses_url(base):
     b = base.rstrip('/')
-    if 'chatgpt.com/backend-api/codex' in b:
-        return b if b.endswith('/responses') else f"{b}/responses"
+    if b.endswith('$'): return b[:-1].rstrip('/')
+    if b.endswith('/responses'): return b
+    path = re.split(r'[?#]', b, maxsplit=1)[0].lower().rstrip('/')
+    if re.search(r'/(backend-api/)?codex$', path):
+        return f"{b}/responses"
     return auto_make_url(base, "responses")
 
 def _parse_claude_sse(resp_lines):
@@ -353,7 +356,7 @@ def _openai_stream(api_base, api_key, messages, model, api_mode='chat_completion
         temperature = max(0.01, min(temperature, 1.0)); force_temperature = True  # MiniMax requires temp in (0, 1]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "Accept": "text/event-stream"}
     if api_mode == "responses":
-        url = auto_make_url(api_base, "responses")
+        url = auto_make_responses_url(api_base)
         payload = {"model": model, "input": _to_responses_input(messages), "stream": stream, 
                    "prompt_cache_key": _RESP_CACHE_KEY, "instructions": system or "You are an Omnipotent Executor."}
         if reasoning_effort: payload["reasoning"] = {"effort": reasoning_effort}

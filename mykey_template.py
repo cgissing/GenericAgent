@@ -430,6 +430,10 @@ native_oai_config = {
 # harness. `auth='codex'` reuses $CODEX_HOME/auth.json or ~/.codex/auth.json.
 # Run `codex login` for ChatGPT OAuth, or set OPENAI_API_KEY / apikey for
 # API-key mode. GenericAgent never implements its own OAuth flow.
+# Official OpenAI/ChatGPT endpoints are defaults only. Set codex_base_url,
+# chatgpt_base_url, openai_base_url, apibase, base_url, or baseurl to route
+# through a custom Codex/OpenAI gateway; /backend-api/codex is completed with
+# /responses and is not rewritten to an official host or /v1 path.
 # native_gpt_config = {
 #     'provider': 'codex_gpt',
 #     'name': 'gpt-native',
@@ -443,4 +447,5 @@ native_oai_config = {
 #     'memory_policy': 'auto',
 #     # 'apikey': 'sk-<your-openai-api-key>',
 #     # 'apibase': 'https://api.openai.com/v1',
+#     # 'codex_base_url': 'https://gateway.example/backend-api/codex',
 # }

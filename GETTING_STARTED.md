@@ -291,7 +291,7 @@ native_gpt_config = {
 
 Authentication:
 
-- `auth="codex"` reads `$CODEX_HOME/auth.json`, then `~/.codex/auth.json`.
+- `auth="codex"` reads credentials from `$CODEX_HOME/auth.json`, then `~/.codex/auth.json`. It also reads `$CODEX_HOME/config.toml`, then `~/.codex/config.toml`, so a selected Codex `model_provider` such as `sub2api` can provide the default `base_url`.
 - If ChatGPT OAuth tokens exist, GA uses a Codex Responses backend. The official `https://chatgpt.com/backend-api/codex/responses` endpoint is only the default fallback.
 - If only an API key is available, GA uses a Responses API endpoint. The official `https://api.openai.com/v1/responses` endpoint is only the default fallback.
 - To use a custom Codex/OpenAI gateway for quota management or account switching, set `codex_base_url`, `chatgpt_base_url`, `openai_base_url`, `apibase`, `base_url`, or `baseurl`. For example, `https://gateway.example/backend-api/codex` becomes `https://gateway.example/backend-api/codex/responses` and is not rewritten to an official host or `/v1` path.

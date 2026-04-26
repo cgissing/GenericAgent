@@ -121,6 +121,39 @@ class TestCodexGPTAuth(unittest.TestCase):
         )
         self.assertEqual(auth.base_url, "https://gateway.example/openai/v1")
 
+    def test_api_key_uses_codex_config_model_provider_base_url(self):
+        from gpt_auth import resolve_gpt_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "auth.json").write_text(
+                json.dumps({"OPENAI_API_KEY": "sk-test"}),
+                encoding="utf-8",
+            )
+            Path(td, "config.toml").write_text(
+                'model_provider = "sub2api"\n\n[model_providers.sub2api]\nbase_url = "http://localhost:8317/v1"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CODEX_HOME": td}, clear=False):
+                auth = resolve_gpt_auth({"auth": "codex"})
+        self.assertEqual(auth.mode, "api_key")
+        self.assertEqual(auth.base_url, "http://localhost:8317/v1")
+
+    def test_explicit_base_url_overrides_codex_config_model_provider(self):
+        from gpt_auth import resolve_gpt_auth
+
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "auth.json").write_text(
+                json.dumps({"OPENAI_API_KEY": "sk-test"}),
+                encoding="utf-8",
+            )
+            Path(td, "config.toml").write_text(
+                'model_provider = "sub2api"\n\n[model_providers.sub2api]\nbase_url = "http://localhost:8317/v1"\n',
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"CODEX_HOME": td}, clear=False):
+                auth = resolve_gpt_auth({"auth": "codex", "openai_base_url": "https://explicit.example/v1"})
+        self.assertEqual(auth.base_url, "https://explicit.example/v1")
+
 
 class TestResponsesPayloadAndParsing(unittest.TestCase):
     def test_payload_has_codex_responses_fields(self):

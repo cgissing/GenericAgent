@@ -48,6 +48,14 @@ def codex_auth_path(cfg: dict[str, Any] | None = None) -> Path:
     return codex_home_from_env() / "auth.json"
 
 
+def codex_config_path(cfg: dict[str, Any] | None = None) -> Path:
+    cfg = cfg or {}
+    raw = cfg.get("codex_config_path")
+    if raw:
+        return Path(raw).expanduser()
+    return codex_home_from_env() / "config.toml"
+
+
 def load_codex_auth(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     path = codex_auth_path(cfg)
     if not path.exists():
@@ -56,6 +64,52 @@ def load_codex_auth(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         raise GPTAuthError(f"Failed to read Codex auth file at {path}: {exc}") from exc
+
+
+def load_codex_config(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    path = codex_config_path(cfg)
+    if not path.exists():
+        return {}
+    text = path.read_text(encoding="utf-8")
+    try:
+        try:
+            import tomllib  # type: ignore
+        except ModuleNotFoundError:
+            import tomli as tomllib  # type: ignore
+        return tomllib.loads(text)
+    except ModuleNotFoundError:
+        return _parse_minimal_toml(text)
+    except Exception as exc:
+        raise GPTAuthError(f"Failed to read Codex config file at {path}: {exc}") from exc
+
+
+def _parse_minimal_toml(text: str) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    current = data
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = data
+            for part in line[1:-1].split("."):
+                current = current.setdefault(part.strip(), {})
+            continue
+        if "=" not in line:
+            continue
+        key, value = [x.strip() for x in line.split("=", 1)]
+        current[key] = _parse_minimal_toml_value(value)
+    return data
+
+
+def _parse_minimal_toml_value(value: str) -> Any:
+    if "#" in value:
+        value = value.split("#", 1)[0].strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    return value
 
 
 def _b64url_json(segment: str) -> dict[str, Any]:
@@ -99,7 +153,28 @@ def _configured_base_url(cfg: dict[str, Any], keys: tuple[str, ...], default: st
         value = cfg.get(key)
         if value:
             return str(value).rstrip("/")
+    codex_base_url = _codex_config_base_url(cfg)
+    if codex_base_url:
+        return codex_base_url.rstrip("/")
     return default.rstrip("/")
+
+
+def _codex_config_base_url(cfg: dict[str, Any]) -> str | None:
+    config = load_codex_config(cfg)
+    for key in ("base_url", "baseurl", "apibase", "api_base"):
+        value = config.get(key)
+        if value:
+            return str(value)
+    provider = str(cfg.get("codex_model_provider") or config.get("model_provider") or "").strip()
+    providers = config.get("model_providers") or {}
+    if provider and isinstance(providers, dict):
+        provider_cfg = providers.get(provider)
+        if isinstance(provider_cfg, dict):
+            for key in ("base_url", "baseurl", "apibase", "api_base"):
+                value = provider_cfg.get(key)
+                if value:
+                    return str(value)
+    return None
 
 
 def _chatgpt_codex_base_url(cfg: dict[str, Any]) -> str:

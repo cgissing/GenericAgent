@@ -427,9 +427,11 @@ native_oai_config = {
 
 # GPT / Codex-native Responses path. Copy this block to mykey.py when you want
 # GPT-5.5 to use the Codex-native provider rather than the legacy OAI/Claude
-# harness. `auth='codex'` reuses $CODEX_HOME/auth.json or ~/.codex/auth.json.
-# Run `codex login` for ChatGPT OAuth, or set OPENAI_API_KEY / apikey for
-# API-key mode. GenericAgent never implements its own OAuth flow.
+# harness. `auth='codex'` reuses $CODEX_HOME/auth.json or ~/.codex/auth.json
+# for credentials, and reads $CODEX_HOME/config.toml or ~/.codex/config.toml
+# for the selected Codex model_provider base_url. Run `codex login` for
+# ChatGPT OAuth, or set OPENAI_API_KEY / apikey for API-key mode.
+# GenericAgent never implements its own OAuth flow.
 # Official OpenAI/ChatGPT endpoints are defaults only. Set codex_base_url,
 # chatgpt_base_url, openai_base_url, apibase, base_url, or baseurl to route
 # through a custom Codex/OpenAI gateway; /backend-api/codex is completed with

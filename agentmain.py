@@ -10,7 +10,7 @@ if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 elif hasattr(sys.stderr, 'reconfigure'): sys.stderr.reconfigure(errors='replace')
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from llmcore import LLMSession, ToolClient, ClaudeSession, MixinSession, NativeToolClient, NativeClaudeSession, NativeOAISession
+from llmcore import LLMSession, ToolClient, ClaudeSession, MixinSession, NativeToolClient, NativeClaudeSession, NativeOAISession, NativeGPTSession
 from agent_loop import agent_runner_loop
 from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file
 
@@ -37,11 +37,26 @@ if not os.path.exists(cdp_cfg):
         open(cdp_cfg, 'w', encoding='utf-8').write(f"const TID = '__ljq_{hex(random.randint(0, 99999999))[2:8]}';")
     except Exception as e: print(f'[WARN] CDP config init failed: {e} — advanced web features (tmwebdriver) will be unavailable.')
 
-def get_system_prompt():
-    with open(os.path.join(script_dir, f'assets/sys_prompt{lang_suffix}.txt'), 'r', encoding='utf-8') as f: prompt = f.read()
+def get_system_prompt(profile='legacy'):
+    prompt_name = 'sys_prompt_gpt.txt' if profile == 'gpt' else f'sys_prompt{lang_suffix}.txt'
+    with open(os.path.join(script_dir, 'assets', prompt_name), 'r', encoding='utf-8') as f: prompt = f.read()
     prompt += f"\nToday: {time.strftime('%Y-%m-%d %a')}\n"
     prompt += get_global_memory()
     return prompt
+
+def is_gpt_native_config(name, cfg):
+    provider = str(cfg.get('provider', '')).strip().lower()
+    auth = str(cfg.get('auth', cfg.get('auth_mode', ''))).strip().lower()
+    return (
+        provider in ('codex_gpt', 'native_gpt')
+        or 'codex_gpt' in name
+        or ('native' in name and 'gpt' in name)
+        or (auth == 'codex' and str(cfg.get('model', '')).lower().startswith('gpt-'))
+    )
+
+def is_gpt_native_client(client):
+    backend = getattr(client, 'backend', client)
+    return bool(getattr(backend, 'is_gpt_native', False))
 
 class GeneraticAgent:
     def __init__(self):
@@ -52,7 +67,8 @@ class GeneraticAgent:
         for k, cfg in mykeys.items():
             if not any(x in k for x in ['api', 'config', 'cookie']): continue
             try:
-                if 'native' in k and 'claude' in k: llm_sessions += [NativeToolClient(NativeClaudeSession(cfg=cfg))]
+                if is_gpt_native_config(k, cfg): llm_sessions += [NativeToolClient(NativeGPTSession(cfg=cfg))]
+                elif 'native' in k and 'claude' in k: llm_sessions += [NativeToolClient(NativeClaudeSession(cfg=cfg))]
                 elif 'native' in k and 'oai' in k: llm_sessions += [NativeToolClient(NativeOAISession(cfg=cfg))]
                 elif 'claude' in k: llm_sessions += [ToolClient(ClaudeSession(cfg=cfg))]
                 elif 'oai' in k: llm_sessions += [ToolClient(LLMSession(cfg=cfg))]
@@ -62,7 +78,7 @@ class GeneraticAgent:
             if isinstance(s, dict) and 'mixin_cfg' in s:
                 try:
                     mixin = MixinSession(llm_sessions, s['mixin_cfg'])
-                    if isinstance(mixin._sessions[0], (NativeClaudeSession, NativeOAISession)): llm_sessions[i] = NativeToolClient(mixin)
+                    if isinstance(mixin._sessions[0], (NativeClaudeSession, NativeOAISession, NativeGPTSession)): llm_sessions[i] = NativeToolClient(mixin)
                     else: llm_sessions[i] = ToolClient(mixin)
                 except Exception as e: print(f'[WARN] Failed to init MixinSession with cfg {s["mixin_cfg"]}: {e}')
         self.llmclients = llm_sessions
@@ -74,6 +90,13 @@ class GeneraticAgent:
         self.llm_no = 0;  self.inc_out = False
         self.handler = None; self.verbose = True
         self.llmclient = self.llmclients[self.llm_no]
+        self._load_current_tool_schema()
+
+    def _load_current_tool_schema(self):
+        name = self.get_llm_name(model=True)
+        if is_gpt_native_client(self.llmclient): load_tool_schema('_gpt')
+        elif 'glm' in name or 'minimax' in name or 'kimi' in name: load_tool_schema('_cn')
+        else: load_tool_schema()
 
     def next_llm(self, n=-1):
         self.llm_no = ((self.llm_no + 1) if n < 0 else n) % len(self.llmclients)
@@ -82,9 +105,7 @@ class GeneraticAgent:
         try: self.llmclient.backend.history = lastc.backend.history
         except: raise Exception('[ERROR] BAD Mixin config: Check your mykey.py')
         self.llmclient.last_tools = ''
-        name = self.get_llm_name(model=True)
-        if 'glm' in name or 'minimax' in name or 'kimi' in name: load_tool_schema('_cn')
-        else: load_tool_schema()
+        self._load_current_tool_schema()
     def list_llms(self): return [(i, self.get_llm_name(b), i == self.llm_no) for i, b in enumerate(self.llmclients)]
     def get_llm_name(self, b=None, model=False):
         b = self.llmclient if b is None else b
@@ -130,7 +151,8 @@ class GeneraticAgent:
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
             self.history.append(f"[USER]: {rquery}")
             
-            sys_prompt = get_system_prompt() + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
+            prompt_profile = 'gpt' if is_gpt_native_client(self.llmclient) else 'legacy'
+            sys_prompt = get_system_prompt(prompt_profile) + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
             script_dir = os.path.dirname(os.path.abspath(__file__))
             handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'))
             if self.handler and 'key_info' in self.handler.working: 

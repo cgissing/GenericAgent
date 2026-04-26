@@ -1,0 +1,163 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "shell_command",
+      "description": "Run a local shell command in the task workspace. Use for system commands, tests, build steps, git inspection, and small scripted probes. Prefer read-only commands unless edits are required by the user.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string", "description": "Command to execute."},
+          "workdir": {"type": "string", "description": "Working directory. Relative paths are resolved against GA temp cwd."},
+          "timeout_ms": {"type": "integer", "description": "Timeout in milliseconds.", "default": 60000},
+          "login": {"type": "boolean", "description": "Reserved for Codex compatibility. Ignored by this runtime.", "default": true}
+        },
+        "required": ["command"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "code_run",
+      "description": "Run Python or a shell snippet. Prefer `shell_command` for ordinary shell commands and `code_run` for Python probes or generated scripts.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {"type": "string", "description": "Code or command text. If omitted, a reply code block may be used."},
+          "type": {"type": "string", "enum": ["python", "powershell"], "description": "Execution type.", "default": "python"},
+          "timeout": {"type": "integer", "description": "Timeout in seconds.", "default": 60},
+          "cwd": {"type": "string", "description": "Working directory, defaults to GA cwd."},
+          "inline_eval": {"type": "boolean", "description": "Internal debug mode; do not use unless explicitly requested.", "default": false}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_read",
+      "description": "Read a file with optional line numbers. Read before modifying files so edits are based on the latest content.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string", "description": "Relative or absolute path."},
+          "start": {"type": "integer", "description": "Start line number, 1-based.", "default": 1},
+          "count": {"type": "integer", "description": "Number of lines to read.", "default": 200},
+          "keyword": {"type": "string", "description": "Optional case-insensitive search term."},
+          "show_linenos": {"type": "boolean", "description": "Show line numbers.", "default": true}
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "custom",
+    "name": "apply_patch",
+    "description": "Apply a Codex-style patch. The input must be a complete patch beginning with *** Begin Patch and ending with *** End Patch. Use this for precise edits.",
+    "format": {
+      "type": "grammar",
+      "syntax": "lark",
+      "definition": "start: \"*** Begin Patch\" /[\\s\\S]*/ \"*** End Patch\""
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_patch",
+      "description": "Replace one unique old_content block with new_content. Exact whitespace match is required. Prefer apply_patch for code edits.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string", "description": "File path."},
+          "old_content": {"type": "string", "description": "Original text block. Must be unique."},
+          "new_content": {"type": "string", "description": "Replacement text. Supports {{file:path:startLine:endLine}} references."}
+        },
+        "required": ["path", "old_content", "new_content"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_write",
+      "description": "Create, overwrite, append, or prepend files. Use only for large whole-file writes. Put intended content in the assistant message body before calling.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string", "description": "File path."},
+          "mode": {"type": "string", "enum": ["overwrite", "append", "prepend"], "description": "Write mode.", "default": "append"}
+        },
+        "required": ["path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "web_scan",
+      "description": "Read simplified HTML/text from the current real Chrome tab or list/switch tabs. Use after navigation or when page state is unclear.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tabs_only": {"type": "boolean", "description": "Return only tab metadata.", "default": false},
+          "switch_tab_id": {"type": "string", "description": "Optional tab id to activate."},
+          "text_only": {"type": "boolean", "description": "Return plain text instead of simplified HTML.", "default": false}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "web_execute_js",
+      "description": "Execute JavaScript in the user's real Chrome session. Use for precise DOM/CDP operations. Do not read unrelated cookies, tokens, or account data.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {"type": "string", "description": "JavaScript code or path to a script file."},
+          "save_to_file": {"type": "string", "description": "Optional output path for long returned data."},
+          "no_monitor": {"type": "boolean", "description": "Skip page-change monitoring for read-only operations.", "default": false},
+          "switch_tab_id": {"type": "string", "description": "Optional tab id to activate before execution."}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_working_checkpoint",
+      "description": "Update short-term working memory injected into later turns. Store verified constraints, file paths, failures, decisions, progress, and next steps.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key_info": {"type": "string", "description": "Concise current task state, under about 200 tokens."},
+          "related_sop": {"type": "string", "description": "Relevant SOP or memory file names to reread if useful."}
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ask_user",
+      "description": "Interrupt the task to ask the user when a decision, credential, missing input, or real blocker prevents safe progress.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {"type": "string", "description": "Question for the user."},
+          "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional quick choices."}
+        },
+        "required": ["question"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "start_long_term_update",
+      "description": "Start GA's long-term memory distillation when verified durable facts or reusable SOPs should be preserved. Skip for transient details and secrets.",
+      "parameters": {"type": "object", "properties": {}}
+    }
+  }
+]

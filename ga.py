@@ -7,6 +7,8 @@ if sys.stderr is None: sys.stderr = open(os.devnull, "w")
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agent_loop import BaseHandler, StepOutcome, json_default
+from gpt_compaction import build_structured_compaction, should_compact
+from memory_adapter import MemoryEvent, append_l4_memory_event, build_turn_memory_entry, entry_to_history_line
 
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=[]):
     """代码执行器
@@ -255,6 +257,116 @@ def consume_file(dr, file):
         os.remove(os.path.join(dr, file))
         return content
 
+def _resolve_under(base, path):
+    base_path = Path(base).resolve()
+    target = (base_path / path).resolve() if not os.path.isabs(str(path)) else Path(path).resolve()
+    try:
+        target.relative_to(base_path)
+    except ValueError as exc:
+        raise ValueError(f"path escapes workdir: {path}") from exc
+    return target
+
+def _strip_patch_path(path):
+    path = str(path).strip()
+    if path.startswith(("a/", "b/")):
+        path = path[2:]
+    return path
+
+def apply_codex_patch_text(patch, workdir):
+    try:
+        return _apply_codex_patch_text(patch, workdir)
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+def _apply_codex_patch_text(patch, workdir):
+    lines = (patch or "").splitlines()
+    if not lines or lines[0].strip() != "*** Begin Patch":
+        return {"status": "error", "msg": "patch must start with *** Begin Patch"}
+    if lines[-1].strip() != "*** End Patch":
+        return {"status": "error", "msg": "patch must end with *** End Patch"}
+    i = 1
+    changed = []
+    while i < len(lines) - 1:
+        line = lines[i]
+        if line.startswith("*** Add File: "):
+            rel = _strip_patch_path(line.split(": ", 1)[1])
+            i += 1
+            out = []
+            while i < len(lines) - 1 and not lines[i].startswith("*** "):
+                if not lines[i].startswith("+"):
+                    return {"status": "error", "msg": f"invalid add line in {rel}: {lines[i][:80]}"}
+                out.append(lines[i][1:])
+                i += 1
+            target = _resolve_under(workdir, rel)
+            if target.exists():
+                return {"status": "error", "msg": f"file already exists: {target}"}
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+            changed.append(str(target))
+            continue
+        if line.startswith("*** Delete File: "):
+            rel = _strip_patch_path(line.split(": ", 1)[1])
+            target = _resolve_under(workdir, rel)
+            if not target.exists():
+                return {"status": "error", "msg": f"file not found: {target}"}
+            target.unlink()
+            changed.append(str(target))
+            i += 1
+            continue
+        if line.startswith("*** Update File: "):
+            rel = _strip_patch_path(line.split(": ", 1)[1])
+            target = _resolve_under(workdir, rel)
+            if not target.exists():
+                return {"status": "error", "msg": f"file not found: {target}"}
+            text = target.read_text(encoding="utf-8", errors="replace")
+            original = text
+            i += 1
+            move_to = None
+            if i < len(lines) - 1 and lines[i].startswith("*** Move to: "):
+                move_to = _strip_patch_path(lines[i].split(": ", 1)[1])
+                i += 1
+            while i < len(lines) - 1 and not lines[i].startswith("*** "):
+                if lines[i].startswith("@@"):
+                    i += 1
+                    continue
+                old, new = [], []
+                while i < len(lines) - 1 and not lines[i].startswith(("*** ", "@@")):
+                    marker, body = lines[i][:1], lines[i][1:]
+                    if marker == " ":
+                        old.append(body); new.append(body)
+                    elif marker == "-":
+                        old.append(body)
+                    elif marker == "+":
+                        new.append(body)
+                    else:
+                        return {"status": "error", "msg": f"invalid update line in {rel}: {lines[i][:80]}"}
+                    i += 1
+                old_text = "\n".join(old)
+                new_text = "\n".join(new)
+                candidates = [old_text]
+                if old_text and not old_text.endswith("\n"):
+                    candidates.append(old_text + "\n")
+                replaced = False
+                for candidate in candidates:
+                    if candidate and text.count(candidate) == 1:
+                        replacement = new_text + ("\n" if candidate.endswith("\n") else "")
+                        text = text.replace(candidate, replacement, 1)
+                        replaced = True
+                        break
+                if not replaced:
+                    return {"status": "error", "msg": f"patch hunk did not match uniquely in {target}"}
+            if text != original:
+                target.write_text(text, encoding="utf-8")
+                changed.append(str(target))
+            if move_to:
+                dest = _resolve_under(workdir, move_to)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                target.replace(dest)
+                changed[-1:] = [str(dest)]
+            continue
+        return {"status": "error", "msg": f"unexpected patch line: {line[:80]}"}
+    return {"status": "success", "changed": changed}
+
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
     def __init__(self, parent, last_history=None, cwd='./temp'):
@@ -296,6 +408,37 @@ class GenericAgentHandler(BaseHandler):
                 except Exception as e: result = f'Error: {e}'
             finally: os.chdir(old_cwd)
         else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal)
+        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+        return StepOutcome(result, next_prompt=next_prompt)
+
+    def do_shell_command(self, args, response):
+        command = args.get("command", "")
+        if not command:
+            return StepOutcome({"status": "error", "msg": "command is required"}, next_prompt="\n")
+        workdir = args.get("workdir") or args.get("cwd") or "./"
+        cwd = os.path.normpath(os.path.abspath(os.path.join(self.cwd, workdir)))
+        timeout_ms = args.get("timeout_ms")
+        timeout = max(1, int(timeout_ms) // 1000) if timeout_ms else int(args.get("timeout", 60))
+        code_type = "powershell" if os.name == "nt" else "bash"
+        result = yield from code_run(command, code_type, timeout, cwd, code_cwd=os.path.normpath(self.cwd), stop_signal=self.code_stop_signal)
+        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
+        return StepOutcome(result, next_prompt=next_prompt)
+
+    def do_apply_patch(self, args, response):
+        patch = args.get("patch") or args.get("_raw") or ""
+        if not patch:
+            matches = re.findall(r"```(?:diff|patch|text)?\n(.*?)\n```", getattr(response, "content", "") or "", re.DOTALL)
+            patch = matches[-1].strip() if matches else ""
+        if not patch:
+            return StepOutcome({"status": "error", "msg": "patch is required"}, next_prompt="\n")
+        workdir = args.get("workdir") or args.get("cwd") or "./"
+        base = os.path.normpath(os.path.abspath(os.path.join(self.cwd, workdir)))
+        yield f"[Action] Applying patch in {base}\n"
+        try:
+            result = apply_codex_patch_text(patch, base)
+        except Exception as e:
+            result = {"status": "error", "msg": str(e)}
+        yield f"[Status] {result}\n"
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
@@ -514,18 +657,46 @@ class GenericAgentHandler(BaseHandler):
             except: pass
         return prompt
 
+    def _is_gpt_native(self):
+        backend = getattr(getattr(self.parent, 'llmclient', None), 'backend', None)
+        return bool(getattr(backend, 'is_gpt_native', False))
+
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason):
-        _c = re.sub(r'```.*?```|<thinking>.*?</thinking>', '', response.content, flags=re.DOTALL)
-        rsumm = re.search(r"<summary>(.*?)</summary>", _c, re.DOTALL)
-        if rsumm: summary = rsumm.group(1).strip()
+        if self._is_gpt_native():
+            entry = build_turn_memory_entry(response, tool_calls, tool_results, turn, next_prompt)
+            self.history_info.append(entry_to_history_line(entry))
+            try:
+                backend = getattr(getattr(self.parent, 'llmclient', None), 'backend', None)
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                append_l4_memory_event(
+                    os.path.join(script_dir, 'memory'),
+                    MemoryEvent(
+                        event_type="turn_summary",
+                        evidence_refs=entry.artifacts,
+                        created_by_model=False,
+                        model=getattr(backend, 'model', None),
+                        cost_class="deterministic",
+                        payload=entry.__dict__,
+                    ),
+                )
+            except Exception as e:
+                print(f"[WARN] GPT memory event write failed: {e}")
+            est_chars = sum(len(str(x)) for x in self.history_info[-200:])
+            backend = getattr(getattr(self.parent, 'llmclient', None), 'backend', None)
+            if should_compact(est_chars, getattr(backend, 'context_win', 24000)):
+                next_prompt += "\n\n" + build_structured_compaction(self.history_info, self.working)
         else:
-            tc = tool_calls[0]; tool_name, args = tc['tool_name'], tc['args']   # at least one because no_tool
-            clean_args = {k: v for k, v in args.items() if not k.startswith('_')}
-            summary = f"调用工具{tool_name}, args: {clean_args}"
-            if tool_name == 'no_tool': summary = "直接回答了用户问题"
-            next_prompt += "\n[DANGER] 你遗漏了<summary>，必须按协议一直在每次回复中用<summary>中输出极简单行摘要！" 
-        summary = smart_format(summary, max_str_len=100)
-        self.history_info.append(f'[Agent] {summary}')
+            _c = re.sub(r'```.*?```|<thinking>.*?</thinking>', '', response.content, flags=re.DOTALL)
+            rsumm = re.search(r"<summary>(.*?)</summary>", _c, re.DOTALL)
+            if rsumm: summary = rsumm.group(1).strip()
+            else:
+                tc = tool_calls[0]; tool_name, args = tc['tool_name'], tc['args']   # at least one because no_tool
+                clean_args = {k: v for k, v in args.items() if not k.startswith('_')}
+                summary = f"调用工具{tool_name}, args: {clean_args}"
+                if tool_name == 'no_tool': summary = "直接回答了用户问题"
+                next_prompt += "\n[DANGER] 你遗漏了<summary>，必须按协议一直在每次回复中用<summary>中输出极简单行摘要！"
+            summary = smart_format(summary, max_str_len=100)
+            self.history_info.append(f'[Agent] {summary}')
         if turn % 65 == 0 and 'plan' not in str(self.working.get('related_sop')):
             next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况进行ask_user，不允许继续重试。"
         elif turn % 7 == 0:
